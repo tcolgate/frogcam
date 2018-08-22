@@ -2,6 +2,7 @@ package main // import "github.com/tcolgate/frogcam"
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	_ "net/http/pprof"
 	"net/textproto"
 	"os"
 	"sort"
@@ -147,11 +149,21 @@ FMT:
 	var (
 		li   chan *bytes.Buffer = make(chan *bytes.Buffer)
 		fi                      = make(chan []byte)
+		sdfi                    = make(chan []byte)
 		back                    = make(chan struct{})
 	)
 
-	go encodeToImage(cam, back, fi, li, w, h, f)
-	go httpVideo(*addr, li)
+	go encodeToJPEG(back, fi, li, w, h, f)
+
+	sd := newSigmaDelta(4, image.Rect(0, 0, int(w), int(h)))
+	go detectmotion(back, sdfi, sd, w, h, f)
+
+	http.Handle("/sigmadelta/", http.StripPrefix("/sigmadelta/", sd))
+	http.Handle("/stream", httpVideo(li))
+
+	go func() {
+		log.Fatal(http.ListenAndServe(*addr, nil))
+	}()
 
 	timeout := uint32(15) //5 seconds
 	start := time.Now()
@@ -196,15 +208,62 @@ FMT:
 				<-back
 			default:
 			}
+
+			select {
+			case sdfi <- frame:
+				<-back
+			default:
+			}
 		}
 	}
 }
 
-func encodeToImage(wc *webcam.Webcam, back chan struct{}, fi chan []byte, li chan *bytes.Buffer, w, h uint32, format webcam.PixelFormat) {
+type motion struct {
+	x1, y1 int
+	x2, y2 int
+}
 
+func addMotionDht(frame []byte) []byte {
 	var (
-		frame []byte
+		dhtMarker = []byte{255, 196}
+		dht       = []byte{1, 162, 0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125, 1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7, 34, 113, 20, 50, 129, 145, 161, 8, 35, 66, 177, 193, 21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25, 26, 37, 38, 39, 40, 41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 17, 0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119, 0, 1, 2, 3, 17, 4, 5, 33, 49, 6, 18, 65, 81, 7, 97, 113, 19, 34, 50, 129, 8, 20, 66, 145, 161, 177, 193, 9, 35, 51, 82, 240, 21, 98, 114, 209, 10, 22, 36, 52, 225, 37, 241, 23, 24, 25, 26, 38, 39, 40, 41, 42, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 130, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 226, 227, 228, 229, 230, 231, 232, 233, 234, 242, 243, 244, 245, 246, 247, 248, 249, 250}
+		sosMarker = []byte{255, 218}
 	)
+	jpegParts := bytes.Split(frame, sosMarker)
+	return append(jpegParts[0], append(dhtMarker, append(dht, append(sosMarker, jpegParts[1]...)...)...)...)
+}
+
+func frameToImage(frame []byte, w, h uint32, format webcam.PixelFormat) (*image.YCbCr, []byte, error) {
+	switch format {
+	case fmtYUYV:
+		img := image.NewYCbCr(image.Rect(0, 0, int(w), int(h)), image.YCbCrSubsampleRatio422)
+		for i := range img.Cb {
+			ii := i * 4
+			img.Y[i*2] = frame[ii]
+			img.Y[i*2+1] = frame[ii+2]
+			img.Cb[i] = frame[ii+1]
+			img.Cr[i] = frame[ii+3]
+
+		}
+		return img, frame, nil
+	case fmtMJPEG:
+		frame = addMotionDht(frame)
+		bufr := bytes.NewReader(frame)
+		img, err := jpeg.Decode(bufr)
+		log.Printf("img type: %T", img)
+		var ok bool
+		yuv, ok := img.(*image.YCbCr)
+		if !ok {
+			return nil, nil, errors.New("not YUV image")
+		}
+		return yuv, frame, err
+	default:
+	}
+	return nil, nil, errors.New("unknown format")
+}
+
+func encodeToJPEG(back chan struct{}, fi chan []byte, li chan *bytes.Buffer, w, h uint32, format webcam.PixelFormat) {
+	var frame []byte
 	for {
 		bframe := <-fi
 		// copy frame
@@ -217,18 +276,14 @@ func encodeToImage(wc *webcam.Webcam, back chan struct{}, fi chan []byte, li cha
 
 		switch format {
 		case fmtYUYV:
-			var img image.Image
-			yuyv := image.NewYCbCr(image.Rect(0, 0, int(w), int(h)), image.YCbCrSubsampleRatio422)
-			for i := range yuyv.Cb {
-				ii := i * 4
-				yuyv.Y[i*2] = frame[ii]
-				yuyv.Y[i*2+1] = frame[ii+2]
-				yuyv.Cb[i] = frame[ii+1]
-				yuyv.Cr[i] = frame[ii+3]
-
-			}
-			img = yuyv
+			var err error
 			//convert to jpeg
+			var img image.Image
+			img, frame, err = frameToImage(frame, w, h, format)
+			if err != nil {
+				log.Fatal(err)
+				return
+			}
 			if err := jpeg.Encode(buf, img, nil); err != nil {
 				log.Fatal(err)
 				return
@@ -256,10 +311,36 @@ func encodeToImage(wc *webcam.Webcam, back chan struct{}, fi chan []byte, li cha
 	}
 }
 
-func httpVideo(addr string, li chan *bytes.Buffer) {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func detectmotion(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat) {
+	var frame []byte
+	var err error
+	var img *image.YCbCr
+	for {
+		bframe := <-fi
+		// copy frame
+		if len(frame) < len(bframe) {
+			frame = make([]byte, len(bframe))
+		}
+		copy(frame, bframe)
+		back <- struct{}{}
+		img, frame, err = frameToImage(frame, w, h, format)
+		if err != nil {
+			log.Printf("err: %v", err)
+			continue
+		}
+		sd.Update(img)
+	}
+}
+
+/*
+func httpVideo(addr string,
+}
+*/
+
+func httpVideo(li chan *bytes.Buffer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("connect from", r.RemoteAddr, r.URL)
-		if r.URL.Path != "/" {
+		if r.URL.Path != "/stream" {
 			http.NotFound(w, r)
 			return
 		}
@@ -289,6 +370,4 @@ func httpVideo(addr string, li chan *bytes.Buffer) {
 			}
 		}
 	})
-
-	log.Fatal(http.ListenAndServe(addr, nil))
 }
