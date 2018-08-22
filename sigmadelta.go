@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"net/http"
 	"sync"
@@ -37,69 +36,61 @@ func (s *sigmadelta) Update(in *image.YCbCr) error {
 	defer s.Unlock()
 
 	// mt estimator
-	for i := s.bounds.Min.X; i <= s.bounds.Max.X; i++ {
-		for j := s.bounds.Min.Y; j <= s.bounds.Max.Y; j++ {
-			inx := in.YCbCrAt(i, j).Y
-			mx := s.m.GrayAt(i, j)
-			switch {
-			case mx.Y < inx:
-				s.m.SetGray(i, j, color.Gray{mx.Y + 1})
-			case mx.Y > inx:
-				s.m.SetGray(i, j, color.Gray{mx.Y - 1})
-			default:
-			}
+	for i := 0; i < len(in.Y); i++ {
+		inx := in.Y[i]
+		mx := s.m.Pix[i]
+		switch {
+		case mx < inx:
+			s.m.Pix[i] = mx + 1
+		case mx > inx:
+			s.m.Pix[i] = mx - 1
+		default:
 		}
 	}
 
 	// ot computation
-	for i := s.bounds.Min.X; i <= s.bounds.Max.X; i++ {
-		for j := s.bounds.Min.Y; j <= s.bounds.Max.Y; j++ {
-			inx := in.YCbCrAt(i, j).Y
-			mx := s.m.GrayAt(i, j)
+	for i := 0; i < len(in.Y); i++ {
+		inx := in.Y[i]
+		mx := s.m.Pix[i]
 
-			oy := int(mx.Y) - int(inx)
-			if oy <= 0 {
-				oy *= -1
-			}
-
-			s.o.SetGray(i, j, color.Gray{uint8(oy)})
+		oy := int(mx) - int(inx)
+		if oy <= 0 {
+			oy *= -1
 		}
+
+		s.o.Pix[i] = uint8(oy)
 	}
 
 	// vt update
-	for i := s.bounds.Min.X; i <= s.bounds.Max.X; i++ {
-		for j := s.bounds.Min.Y; j <= s.bounds.Max.Y; j++ {
-			ox := s.o.GrayAt(i, j)
-			vx := s.v.GrayAt(i, j)
-			intvx := int(vx.Y)
+	for i := 0; i < len(in.Y); i++ {
+		ox := s.o.Pix[i]
+		vx := s.v.Pix[i]
+		intvx := int(vx)
 
-			not := s.n * int(ox.Y)
-			switch {
-			case intvx < not:
-				if intvx < 255 {
-					s.v.SetGray(i, j, color.Gray{vx.Y + 1})
-				}
-			case intvx > not:
-				if intvx > 1 {
-					s.v.SetGray(i, j, color.Gray{vx.Y - 1})
-				}
-			default:
+		not := s.n * int(ox)
+		switch {
+		case intvx < not:
+			if intvx < 255 {
+				s.v.Pix[i] = vx + 1
 			}
+		case intvx > not:
+			if intvx > 1 {
+				s.v.Pix[i] = vx - 1
+			}
+		default:
 		}
 	}
 
 	// et estimate
-	for i := s.bounds.Min.X; i <= s.bounds.Max.X; i++ {
-		for j := s.bounds.Min.Y; j <= s.bounds.Max.Y; j++ {
-			ox := s.o.GrayAt(i, j)
-			vx := s.v.GrayAt(i, j)
+	for i := 0; i < len(in.Y); i++ {
+		ox := s.o.Pix[i]
+		vx := s.v.Pix[i]
 
-			switch {
-			case ox.Y < vx.Y:
-				s.e.SetGray(i, j, color.Gray{0})
-			default:
-				s.e.SetGray(i, j, color.Gray{255})
-			}
+		switch {
+		case ox < vx:
+			s.e.Pix[i] = 0
+		default:
+			s.e.Pix[i] = 255
 		}
 	}
 
