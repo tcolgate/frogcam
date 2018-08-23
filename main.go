@@ -55,6 +55,7 @@ func main() {
 	szstr := flag.String("s", "", "frame size to use, default largest one")
 	addr := flag.String("l", ":8080", "addr to listien")
 	fps := flag.Bool("p", false, "print fps info")
+	n := flag.Uint("n", 2, "sigmadelta N")
 	flag.Parse()
 
 	cam, err := webcam.Open(*dev)
@@ -155,11 +156,14 @@ FMT:
 
 	go encodeToJPEG(back, fi, li, w, h, f)
 
-	sd := newSigmaDelta(4, image.Rect(0, 0, int(w), int(h)))
+	sd := newSigmaDelta(int(*n), image.Rect(0, 0, int(w), int(h)))
 	go detectmotion(back, sdfi, sd, w, h, f)
 
 	http.Handle("/sigmadelta/", http.StripPrefix("/sigmadelta/", sd))
 	http.Handle("/stream", httpVideo(li))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, page)
+	})
 
 	go func() {
 		log.Fatal(http.ListenAndServe(*addr, nil))
@@ -250,7 +254,6 @@ func frameToImage(frame []byte, w, h uint32, format webcam.PixelFormat) (*image.
 		frame = addMotionDht(frame)
 		bufr := bytes.NewReader(frame)
 		img, err := jpeg.Decode(bufr)
-		log.Printf("img type: %T", img)
 		var ok bool
 		yuv, ok := img.(*image.YCbCr)
 		if !ok {

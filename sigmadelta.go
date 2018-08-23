@@ -4,8 +4,13 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log"
 	"net/http"
+	"strings"
 	"sync"
+
+	"github.com/disintegration/imaging"
+	"github.com/harrydb/go/img/grayscale"
 )
 
 type sigmadelta struct {
@@ -101,7 +106,8 @@ func (s *sigmadelta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.RLock()
 	defer s.RUnlock()
 
-	switch r.URL.Path {
+	parts := strings.Split(r.URL.Path, "/")
+	switch parts[0] {
 	case "":
 		fmt.Fprintf(w, "<html><body>Hello</body></html>")
 	case "m":
@@ -116,6 +122,16 @@ func (s *sigmadelta) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "e":
 		w.Header().Set("Content-Type", "image/png")
 		png.Encode(w, s.e)
+	case "eblur":
+		dstImage := imaging.Blur(s.e, 5)
+		gdst := grayscale.Convert(dstImage, grayscale.ToGrayValue)
+		cocos := grayscale.CoCos(gdst, 255, grayscale.NEIGHBOR8)
+		for i := range cocos {
+			log.Printf("coco[%d]: %d points", i, len(cocos[i]))
+		}
+
+		w.Header().Set("Content-Type", "image/png")
+		png.Encode(w, gdst)
 	default:
 		http.Error(w, "file not found", 404)
 	}

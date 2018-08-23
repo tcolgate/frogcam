@@ -1,4 +1,14 @@
 github.com/blackjack/webcam v0.0.0-20180715163424-c9c96d5fa89f h1:9ivF3CMSse0WcQHshtF5EigLb/H36nWXOxx/tP+b+Z0=
 github.com/blackjack/webcam v0.0.0-20180715163424-c9c96d5fa89f/go.mod h1:G0X+rEqYPWSq0dG8OMf8M446MtKytzpPjgS3HbdOJZ4=
+github.com/disintegration/imaging v1.5.0 h1:uYqUhwNmLU4K1FN44vhqS4TZJRAA4RhBINgbQlKyGi0=
+github.com/disintegration/imaging v1.5.0/go.mod h1:9B/deIUIrliYkyMTuXJd6OUFLcrZ2tf+3Qlwnaf/CjU=
+github.com/esimov/stackblur-go v1.0.0 h1:PuXWrQ16VIh6Di+tn3CpKAyzkIIECo9DPGVecrzyDGc=
+github.com/esimov/stackblur-go v1.0.0/go.mod h1:a3zzeKuJKUpCcReHmEsuPaEnq42D2b/bHoCI8UjIuMY=
+github.com/esimov/stackblur-go v1.0.1-0.20180426120713-5587ef424f8b h1:JsnNGj1SQFvpsuSvuONKalUbGIcFlD4WcBfKbsS41YI=
+github.com/esimov/stackblur-go v1.0.1-0.20180426120713-5587ef424f8b/go.mod h1:a3zzeKuJKUpCcReHmEsuPaEnq42D2b/bHoCI8UjIuMY=
+github.com/harrydb/go v0.0.0-20160105214235-0ff7a05d1aa4 h1:xA5LbbQswqRlBNmfJ6Sz0iWee4QVmubayPVhaTONQ8g=
+github.com/harrydb/go v0.0.0-20160105214235-0ff7a05d1aa4/go.mod h1:X81WOeMfDDW5vjsPICoMhc7HC8H49bMg4hy6zZNTwBs=
+golang.org/x/image v0.0.0-20180708004352-c73c2afc3b81 h1:00VmoueYNlNz/aHIilyyQz/MHSqGoWJzpFv/HW8xpzI=
+golang.org/x/image v0.0.0-20180708004352-c73c2afc3b81/go.mod h1:ux5Hcp/YLpHSI86hEcLt0YII63i6oz57MZXIpbrjZUs=
 golang.org/x/sys v0.0.0-20180816055513-1c9583448a9c h1:uHnKXcvx6SNkuwC+nrzxkJ+TpPwZOtumbhWrrOYN5YA=
 golang.org/x/sys v0.0.0-20180816055513-1c9583448a9c/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
