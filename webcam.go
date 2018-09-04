@@ -3,7 +3,6 @@ package main // import "github.com/tcolgate/frogcam"
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -48,13 +47,10 @@ var supportedFormats = map[webcam.PixelFormat]bool{
 	fmtMJPEG: true,
 }
 
-func newWebcam(dev string) {
-	fmtstr := flag.String("f", "", "video format to use, default first supported")
-	szstr := flag.String("s", "", "frame size to use, default largest one")
-
+func newWebcam(dev, fmtstr, szstr string) error {
 	cam, err := webcam.Open(dev)
 	if err != nil {
-		panic(err.Error())
+		return err
 	}
 	defer cam.Close()
 
@@ -69,24 +65,22 @@ func newWebcam(dev string) {
 	var format webcam.PixelFormat
 FMT:
 	for f, s := range formatDesc {
-		if *fmtstr == "" {
+		if fmtstr == "" {
 			if supportedFormats[f] {
 				format = f
 				break FMT
 			}
 
-		} else if *fmtstr == s {
+		} else if fmtstr == s {
 			if !supportedFormats[f] {
-				log.Println(formatDesc[f], "format is not supported, exiting")
-				return
+				return fmt.Errorf("format %q is not supporte", formatDesc[f])
 			}
 			format = f
 			break
 		}
 	}
 	if format == 0 {
-		log.Println("No format found, exiting")
-		return
+		return fmt.Errorf("No format found, exiting")
 	}
 
 	// select frame size
@@ -99,10 +93,10 @@ FMT:
 	}
 	var size *webcam.FrameSize
 	switch {
-	case *szstr == "":
+	case szstr == "":
 		size = &frames[len(frames)-1]
-	case strings.Count(*szstr, "x") == 1:
-		parts := strings.Split(*szstr, "x")
+	case strings.Count(szstr, "x") == 1:
+		parts := strings.Split(szstr, "x")
 		x, xerr := strconv.Atoi(parts[0])
 		y, yerr := strconv.Atoi(parts[1])
 		if xerr != nil || yerr != nil {
@@ -114,31 +108,27 @@ FMT:
 		}
 	default:
 		for _, f := range frames {
-			if *szstr == f.GetString() {
+			if szstr == f.GetString() {
 				size = &f
 			}
 		}
 	}
 
 	if size == nil {
-		log.Println("No matching frame size, exiting")
-		return
+		return fmt.Errorf("no matching frame size %q", szstr)
 	}
 
 	fmt.Fprintln(os.Stderr, "Requesting", formatDesc[format], size.GetString())
 	f, w, h, err := cam.SetImageFormat(format, uint32(size.MaxWidth), uint32(size.MaxHeight))
 	if err != nil {
-		log.Println("SetImageFormat return error", err)
-		return
-
+		return fmt.Errorf("SetImageFormat error %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "Resulting image format: %s %dx%d\n", formatDesc[f], w, h)
 
 	// start streaming
 	err = cam.StartStreaming()
 	if err != nil {
-		log.Println(err)
-		return
+		return fmt.Errorf("failed to start strea, %v", err)
 	}
 
 	var (
@@ -153,25 +143,18 @@ FMT:
 
 	for {
 		err = cam.WaitForFrame(timeout)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
 		switch err.(type) {
 		case nil:
 		case *webcam.Timeout:
 			log.Println(err)
 			continue
 		default:
-			log.Println(err)
-			return
+			return fmt.Errorf("unhandled error from WaitForFrame, %v", err)
 		}
 
 		frame, err := cam.ReadFrame()
 		if err != nil {
-			log.Println(err)
-			return
+			return fmt.Errorf("unhandled error reading frame, %v", err)
 		}
 		if len(frame) != 0 {
 			select {
