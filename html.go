@@ -19,7 +19,6 @@ var page = `
 			<img id="o" display="flex" src="/sigmadelta/o" style="max-width: 24%; height: auto; "/>
 			<img id="v" display="flex" src="/sigmadelta/v" style="max-width: 24%; height: auto; "/>
 			<img id="e" display="flex" src="/sigmadelta/e" style="max-width: 24%; height: auto; "/>
-			<img id="eblur" display="flex" src="/sigmadelta/eblur" style="max-width: 24%; height: auto; "/>
 		</div>
 	</body>
 </html>

@@ -8,15 +8,11 @@ import (
 	"github.com/blackjack/webcam"
 	"github.com/disintegration/gift"
 	"github.com/harrydb/go/img/grayscale"
-	"github.com/lucasb-eyer/go-colorful"
 )
 
-type motion struct {
-	x1, y1 int
-	x2, y2 int
-}
+type motion []grayscale.CoCo
 
-func detectmotion(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat, minCoCo int) {
+func detectmotion(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat, minCoCo int, ms chan motion) {
 	var frame []byte
 	var err error
 	var img *image.YCbCr
@@ -53,9 +49,15 @@ func detectmotion(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint3
 			}
 		}
 
-		pal := colorful.FastWarmPalette(len(filteredCoCos))
-		for i := range filteredCoCos {
-			log.Printf("filteredCoCos[%d]: %d points, %v", i, len(filteredCoCos[i]), pal[i])
+		if len(filteredCoCos) > 0 {
+			ms <- motion(filteredCoCos)
 		}
+
+		/*
+			pal := colorful.FastWarmPalette(len(filteredCoCos))
+			for i := range filteredCoCos {
+				log.Printf("filteredCoCos[%d]: %d points, %v", i, len(filteredCoCos[i]), pal[i])
+			}
+		*/
 	}
 }

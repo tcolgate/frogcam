@@ -30,6 +30,11 @@ func main() {
 	}
 	defer cam.Close()
 
+	err = cam.SetAutoWhiteBalance(false)
+	if err != nil {
+		log.Printf("failed to disable white balance, %v", err)
+	}
+
 	// select pixel format
 	formatDesc := cam.GetSupportedFormats()
 
@@ -118,12 +123,13 @@ FMT:
 		fi   = make(chan []byte)
 		sdfi = make(chan []byte)
 		back = make(chan struct{})
+		ms   = make(chan motion, 1)
 	)
 
 	go encodeToJPEG(back, fi, li, w, h, f)
 
 	sd := newSigmaDelta(int(*n), image.Rect(0, 0, int(w), int(h)))
-	go detectmotion(back, sdfi, sd, w, h, f, 20)
+	go detectmotion(back, sdfi, sd, w, h, f, 20, ms)
 
 	http.Handle("/sigmadelta/", http.StripPrefix("/sigmadelta/", sd))
 	http.Handle("/stream", httpVideo(li))
@@ -168,6 +174,15 @@ FMT:
 					<-back
 				default:
 				}
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case m := <-ms:
+				log.Printf("got some motion: %d", len(m))
 			}
 		}
 	}()
