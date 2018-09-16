@@ -12,7 +12,14 @@ import (
 
 type motion []grayscale.CoCo
 
-func detectmotion(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat, minCoCo int, ms chan motion) {
+type motionDetector struct {
+}
+
+func newMotionDetector() *motionDetector {
+	return &motionDetector{}
+}
+
+func (*motionDetector) Run(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat, minCoCo int, ms chan motion) {
 	var frame []byte
 	var err error
 	var img *image.YCbCr

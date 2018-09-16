@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -47,10 +48,21 @@ var supportedFormats = map[webcam.PixelFormat]bool{
 	fmtMJPEG: true,
 }
 
-func newWebcam(dev, fmtstr, szstr string) error {
+type motionCam struct {
+	cam     *webcam.Webcam
+	timeout uint32
+	active  map[io.Reader]struct{}
+	fi      chan []byte
+	li      chan *bytes.Buffer
+	back    chan struct{}
+	f       webcam.PixelFormat
+	w, h    uint32
+}
+
+func newMotionCam(dev, fmtstr, szstr string) (*motionCam, error) {
 	cam, err := webcam.Open(dev)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer cam.Close()
 
@@ -73,14 +85,14 @@ FMT:
 
 		} else if fmtstr == s {
 			if !supportedFormats[f] {
-				return fmt.Errorf("format %q is not supporte", formatDesc[f])
+				return nil, fmt.Errorf("format %q is not supporte", formatDesc[f])
 			}
 			format = f
 			break
 		}
 	}
 	if format == 0 {
-		return fmt.Errorf("No format found, exiting")
+		return nil, fmt.Errorf("No format found, exiting")
 	}
 
 	// select frame size
@@ -115,55 +127,33 @@ FMT:
 	}
 
 	if size == nil {
-		return fmt.Errorf("no matching frame size %q", szstr)
+		return nil, fmt.Errorf("no matching frame size %q", szstr)
 	}
 
 	fmt.Fprintln(os.Stderr, "Requesting", formatDesc[format], size.GetString())
 	f, w, h, err := cam.SetImageFormat(format, uint32(size.MaxWidth), uint32(size.MaxHeight))
 	if err != nil {
-		return fmt.Errorf("SetImageFormat error %v", err)
+		return nil, fmt.Errorf("SetImageFormat error %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "Resulting image format: %s %dx%d\n", formatDesc[f], w, h)
 
 	// start streaming
 	err = cam.StartStreaming()
 	if err != nil {
-		return fmt.Errorf("failed to start strea, %v", err)
+		return nil, fmt.Errorf("failed to start strea, %v", err)
 	}
 
-	var (
-		li   = make(chan *bytes.Buffer)
-		fi   = make(chan []byte)
-		back = make(chan struct{})
-	)
+	return &motionCam{
+		cam:     cam,
+		timeout: uint32(15),
+		fi:      make(chan []byte),
+		back:    make(chan struct{}),
+		li:      make(chan *bytes.Buffer),
+		f:       f,
+		w:       w,
+		h:       h,
+	}, nil
 
-	go encodeToJPEG(back, fi, li, w, h, f)
-
-	timeout := uint32(15) //5 seconds
-
-	for {
-		err = cam.WaitForFrame(timeout)
-		switch err.(type) {
-		case nil:
-		case *webcam.Timeout:
-			log.Println(err)
-			continue
-		default:
-			return fmt.Errorf("unhandled error from WaitForFrame, %v", err)
-		}
-
-		frame, err := cam.ReadFrame()
-		if err != nil {
-			return fmt.Errorf("unhandled error reading frame, %v", err)
-		}
-		if len(frame) != 0 {
-			select {
-			case fi <- frame:
-				<-back
-			default:
-			}
-		}
-	}
 }
 
 // motion jpeg frames are missing attributes for use as a
@@ -288,4 +278,44 @@ func httpVideo(li chan *bytes.Buffer) http.Handler {
 			}
 		}
 	})
+}
+
+func (mc *motionCam) Run() error {
+	go encodeToJPEG(mc.back, mc.fi, mc.li, mc.w, mc.h, mc.f)
+
+	for {
+		err := mc.cam.WaitForFrame(mc.timeout)
+		switch err.(type) {
+		case nil:
+		case *webcam.Timeout:
+			log.Println(err)
+			continue
+		default:
+			return fmt.Errorf("unhandled error from WaitForFrame, %v", err)
+		}
+
+		frame, err := mc.cam.ReadFrame()
+		if err != nil {
+			return fmt.Errorf("unhandled error reading frame, %v", err)
+		}
+		if len(frame) != 0 {
+			select {
+			case mc.fi <- frame:
+				<-mc.back
+			default:
+			}
+		}
+	}
+}
+
+func (mc *motionCam) GetImage() (image.Image, error) {
+	return nil, nil
+}
+
+func (mc *motionCam) RecordMJPEF() (io.Reader, error) {
+	return nil, nil
+}
+
+func (mc *motionCam) StopRecording(io.Reader) error {
+	return nil
 }
