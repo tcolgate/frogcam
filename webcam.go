@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/blackjack/webcam"
 )
@@ -51,12 +52,14 @@ var supportedFormats = map[webcam.PixelFormat]bool{
 type motionCam struct {
 	cam     *webcam.Webcam
 	timeout uint32
-	active  map[io.Reader]struct{}
 	fi      chan []byte
 	li      chan *bytes.Buffer
 	back    chan struct{}
 	f       webcam.PixelFormat
 	w, h    uint32
+
+	lock sync.RWMutex
+	subs map[chan []byte]struct{}
 }
 
 func newMotionCam(dev, fmtstr, szstr string) (*motionCam, error) {
@@ -64,7 +67,7 @@ func newMotionCam(dev, fmtstr, szstr string) (*motionCam, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cam.Close()
+	//defer cam.Close()
 
 	// select pixel format
 	formatDesc := cam.GetSupportedFormats()
@@ -145,13 +148,14 @@ FMT:
 
 	return &motionCam{
 		cam:     cam,
-		timeout: uint32(15),
+		timeout: uint32(1),
 		fi:      make(chan []byte),
 		back:    make(chan struct{}),
 		li:      make(chan *bytes.Buffer),
 		f:       f,
 		w:       w,
 		h:       h,
+		subs:    make(map[chan []byte]struct{}),
 	}, nil
 
 }
@@ -196,92 +200,30 @@ func frameToImage(frame []byte, w, h uint32, format webcam.PixelFormat) (*image.
 	return nil, nil, errors.New("unknown format")
 }
 
-func encodeToJPEG(back chan struct{}, fi chan []byte, li chan *bytes.Buffer, w, h uint32, format webcam.PixelFormat) {
-	var frame []byte
-	for {
-		bframe := <-fi
-		// copy frame
-		if len(frame) < len(bframe) {
-			frame = make([]byte, len(bframe))
+func encodeToJPEG(frame []byte, w, h uint32, format webcam.PixelFormat) ([]byte, error) {
+	switch format {
+	case fmtYUYV:
+		var err error
+		var img image.Image
+		img, frame, err = frameToImage(frame, w, h, format)
+		if err != nil {
+			return nil, err
 		}
-		copy(frame, bframe)
-		back <- struct{}{}
-		buf := &bytes.Buffer{}
-
-		switch format {
-		case fmtYUYV:
-			var err error
-			//convert to jpeg
-			var img image.Image
-			img, frame, err = frameToImage(frame, w, h, format)
-			if err != nil {
-				log.Fatal(err)
-				return
-			}
-			if err := jpeg.Encode(buf, img, nil); err != nil {
-				log.Fatal(err)
-				return
-			}
-		case fmtMJPEG:
-			buf = bytes.NewBuffer(frame)
-		default:
-			log.Fatal("invalid format ?")
+		buf := bytes.NewBuffer([]byte{})
+		if err := jpeg.Encode(buf, img, nil); err != nil {
+			return nil, err
 		}
-
-		const N = 50
-		// broadcast image up to N ready clients
-		nn := 0
-	FOR:
-		for ; nn < N; nn++ {
-			select {
-			case li <- buf:
-			default:
-				break FOR
-			}
-		}
-		if nn == 0 {
-			li <- buf
-		}
+		return buf.Bytes(), nil
+	case fmtMJPEG:
+		return frame, nil
+	default:
+		return nil, errors.New("invalid format ?")
 	}
 }
 
-func httpVideo(li chan *bytes.Buffer) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Println("connect from", r.RemoteAddr, r.URL)
-		if r.URL.Path != "/stream" {
-			http.NotFound(w, r)
-			return
-		}
-
-		//remove stale image
-		<-li
-		multipartWriter := multipart.NewWriter(w)
-		var boundary = multipartWriter.Boundary()
-		log.Println("boundary = ", boundary)
-		w.Header().Set("Content-Type", `multipart/x-mixed-replace;boundary=`+boundary)
-		//multipartWriter.SetBoundary(boundary)
-		for {
-			img := <-li
-			image := img.Bytes()
-			iw, err := multipartWriter.CreatePart(textproto.MIMEHeader{
-				"Content-type":   []string{"image/jpeg"},
-				"Content-length": []string{strconv.Itoa(len(image))},
-			})
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			_, err = iw.Write(image)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-		}
-	})
-}
-
 func (mc *motionCam) Run() error {
-	go encodeToJPEG(mc.back, mc.fi, mc.li, mc.w, mc.h, mc.f)
+	log.Println("Running webcam loop")
+	//`	go encodeToJPEG(mc.back, mc.fi, mc.li, mc.w, mc.h, mc.f)
 
 	for {
 		err := mc.cam.WaitForFrame(mc.timeout)
@@ -299,23 +241,78 @@ func (mc *motionCam) Run() error {
 			return fmt.Errorf("unhandled error reading frame, %v", err)
 		}
 		if len(frame) != 0 {
-			select {
-			case mc.fi <- frame:
-				<-mc.back
-			default:
+			mc.lock.Lock()
+			for ch := range mc.subs {
+				fc := make([]byte, len(frame))
+				copy(fc, frame)
+				select {
+				case ch <- fc:
+				default:
+				}
 			}
+			mc.lock.Unlock()
+		}
+	}
+}
+
+func (mc *motionCam) Subscribe() chan []byte {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	ch := make(chan []byte, 1)
+	mc.subs[ch] = struct{}{}
+	log.Println("subscriber added")
+	return ch
+}
+
+func (mc *motionCam) Unsubscribe(ch chan []byte) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	close(ch)
+
+	if _, ok := mc.subs[ch]; ok {
+		delete(mc.subs, ch)
+	}
+	log.Println("subscriber removed")
+
+	return
+}
+
+func (mc *motionCam) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mjpg := mc.Subscribe()
+	defer mc.Unsubscribe(mjpg)
+
+	multipartWriter := multipart.NewWriter(w)
+	var boundary = multipartWriter.Boundary()
+	w.Header().Set("Content-Type", `multipart/x-mixed-replace;boundary=`+boundary)
+
+	for {
+		image := <-mjpg
+		iw, err := multipartWriter.CreatePart(textproto.MIMEHeader{
+			"Content-type":   []string{"image/jpeg"},
+			"Content-length": []string{strconv.Itoa(len(image))},
+		})
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		_, err = iw.Write(image)
+		if err != nil {
+			return
 		}
 	}
 }
 
 func (mc *motionCam) GetImage() (image.Image, error) {
-	return nil, nil
+	ch := mc.Subscribe()
+	bs := <-ch
+	mc.Unsubscribe(ch)
+	img, _, err := frameToImage(bs, mc.w, mc.h, mc.f)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }
 
 func (mc *motionCam) RecordMJPEF() (io.Reader, error) {
 	return nil, nil
-}
-
-func (mc *motionCam) StopRecording(io.Reader) error {
-	return nil
 }
