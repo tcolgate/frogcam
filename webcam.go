@@ -2,11 +2,11 @@ package main // import "github.com/tcolgate/frogcam"
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
-	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/blackjack/webcam"
+	"github.com/icza/mjpeg"
 )
 
 const (
@@ -58,8 +59,10 @@ type motionCam struct {
 	f       webcam.PixelFormat
 	w, h    uint32
 
-	lock sync.RWMutex
-	subs map[chan []byte]struct{}
+	lock        sync.RWMutex
+	isStreaming bool
+	sub         chan chan []byte
+	unsub       chan chan []byte
 }
 
 func newMotionCam(dev, fmtstr, szstr string) (*motionCam, error) {
@@ -67,7 +70,6 @@ func newMotionCam(dev, fmtstr, szstr string) (*motionCam, error) {
 	if err != nil {
 		return nil, err
 	}
-	//defer cam.Close()
 
 	// select pixel format
 	formatDesc := cam.GetSupportedFormats()
@@ -155,7 +157,8 @@ FMT:
 		f:       f,
 		w:       w,
 		h:       h,
-		subs:    make(map[chan []byte]struct{}),
+		sub:     make(chan chan []byte),
+		unsub:   make(chan chan []byte),
 	}, nil
 
 }
@@ -222,37 +225,67 @@ func encodeToJPEG(frame []byte, w, h uint32, format webcam.PixelFormat) ([]byte,
 }
 
 func (mc *motionCam) Run() error {
+	defer mc.cam.Close()
+
 	log.Println("Running webcam loop")
 	//`	go encodeToJPEG(mc.back, mc.fi, mc.li, mc.w, mc.h, mc.f)
 
-	for {
-		err := mc.cam.WaitForFrame(mc.timeout)
-		switch err.(type) {
-		case nil:
-		case *webcam.Timeout:
-			log.Println(err)
-			continue
-		default:
-			return fmt.Errorf("unhandled error from WaitForFrame, %v", err)
-		}
+	subs := make(map[chan []byte]struct{})
 
-		frame, err := mc.cam.ReadFrame()
-		if err != nil {
-			return fmt.Errorf("unhandled error reading frame, %v", err)
-		}
-		if len(frame) != 0 {
-			mc.lock.Lock()
-			for ch := range mc.subs {
-				fc := make([]byte, len(frame))
-				copy(fc, frame)
-				select {
-				case ch <- fc:
-				default:
-				}
+	for {
+		select {
+		case newsub := <-mc.sub:
+			subs[newsub] = struct{}{}
+			if len(subs) == 1 {
 			}
-			mc.lock.Unlock()
+		case unsub := <-mc.unsub:
+			delete(subs, unsub)
+			if len(subs) == 0 {
+			}
+		default:
+			err := mc.cam.WaitForFrame(mc.timeout)
+			switch err.(type) {
+			case nil:
+			case *webcam.Timeout:
+				log.Println(err)
+				continue
+			default:
+				return fmt.Errorf("unhandled error from WaitForFrame, %v", err)
+			}
+
+			frame, err := mc.cam.ReadFrame()
+			if err != nil {
+				return fmt.Errorf("unhandled error reading frame, %v", err)
+			}
+			if len(frame) != 0 {
+				mc.lock.Lock()
+				for ch := range subs {
+					fc := make([]byte, len(frame))
+					copy(fc, frame)
+					select {
+					case ch <- fc:
+					default:
+					}
+				}
+				mc.lock.Unlock()
+			}
 		}
 	}
+}
+
+func (mc *motionCam) GetImage() (image.Image, error) {
+	frame, buffID, err := mc.cam.GetFrame()
+	if err != nil {
+		return nil, err
+	}
+
+	fc := make([]byte, len(frame))
+	copy(fc, frame)
+	mc.cam.ReleaseFrame(buffID)
+
+	img, _, err := frameToImage(fc, mc.w, mc.h, mc.f)
+
+	return img, nil
 }
 
 func (mc *motionCam) Subscribe() chan []byte {
@@ -302,17 +335,29 @@ func (mc *motionCam) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (mc *motionCam) GetImage() (image.Image, error) {
-	ch := mc.Subscribe()
-	bs := <-ch
-	mc.Unsubscribe(ch)
-	img, _, err := frameToImage(bs, mc.w, mc.h, mc.f)
-	if err != nil {
-		return nil, err
-	}
-	return img, nil
-}
+func (mc *motionCam) RecordMJPEF(ctx context.Context, fn string) (int, error) {
+	count := 0
 
-func (mc *motionCam) RecordMJPEF() (io.Reader, error) {
-	return nil, nil
+	aw, err := mjpeg.New(fn, int32(mc.w), int32(mc.h), 24)
+	if err != nil {
+		return count, err
+	}
+	defer aw.Close()
+
+	mjpg := mc.Subscribe()
+	defer mc.Unsubscribe(mjpg)
+
+	for {
+		select {
+		case image := <-mjpg:
+			err := aw.AddFrame(image)
+			if err != nil {
+				return count, err
+			}
+
+			count++
+		case <-ctx.Done():
+			return count, nil
+		}
+	}
 }

@@ -4,8 +4,8 @@ import (
 	"image"
 	"log"
 	_ "net/http/pprof"
+	"time"
 
-	"github.com/blackjack/webcam"
 	"github.com/disintegration/gift"
 	"github.com/harrydb/go/img/grayscale"
 )
@@ -13,25 +13,21 @@ import (
 type motion []grayscale.CoCo
 
 type motionDetector struct {
+	t   *time.Ticker
+	cam *motionCam
 }
 
-func newMotionDetector() *motionDetector {
-	return &motionDetector{}
+func newMotionDetector(mc *motionCam, t *time.Ticker) *motionDetector {
+	return &motionDetector{
+		t,
+		mc,
+	}
 }
 
-func (*motionDetector) Run(back chan struct{}, fi chan []byte, sd *sigmadelta, w, h uint32, format webcam.PixelFormat, minCoCo int, ms chan motion) {
-	var frame []byte
-	var err error
-	var img *image.YCbCr
+func (md *motionDetector) Run() {
 	for {
-		bframe := <-fi
-		// copy frame
-		if len(frame) < len(bframe) {
-			frame = make([]byte, len(bframe))
-		}
-		copy(frame, bframe)
-		back <- struct{}{}
-		img, frame, err = frameToImage(frame, w, h, format)
+		<-md.t.C
+		img, err := md.cam.GetImage()
 		if err != nil {
 			log.Printf("err: %v", err)
 			continue

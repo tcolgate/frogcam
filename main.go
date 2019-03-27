@@ -3,9 +3,11 @@ package main // import "github.com/tcolgate/frogcam"
 import (
 	"flag"
 	"fmt"
+	"image"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"time"
 )
 
 func main() {
@@ -13,8 +15,8 @@ func main() {
 	fmtstr := flag.String("f", "", "video format to use, default first supported")
 	szstr := flag.String("s", "", "frame size to use, default largest one")
 	addr := flag.String("l", ":8080", "addr to listien")
-	//	mfps := flag.Duration("motion.fps", (1*time.Second)/10, "Duration between motion samples")
-	//	n := flag.Uint("n", 2, "sigmadelta N")
+	mfps := flag.Duration("motion.fps", (1*time.Second)/10, "Duration between motion samples")
+	n := flag.Uint("n", 2, "sigmadelta N")
 	flag.Parse()
 
 	mc, err := newMotionCam(*dev, *fmtstr, *szstr)
@@ -23,12 +25,12 @@ func main() {
 		return
 	}
 
+	sd := newSigmaDelta(int(*n), image.Rect(0, 0, int(mc.w), int(mc.h)))
+	md := newMotionDetector(mc)
+
 	go mc.Run()
 
-	//	sd := newSigmaDelta(int(*n), image.Rect(0, 0, int(mc.w), int(mc.h)))
-	//	md := newMotionDetector()
-
-	//	http.Handle("/sigmadelta/", http.StripPrefix("/sigmadelta/", sd))
+	http.Handle("/sigmadelta/", http.StripPrefix("/sigmadelta/", sd))
 	http.Handle("/stream", mc)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, page)
